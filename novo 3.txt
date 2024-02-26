@@ -1,0 +1,1248 @@
+      public void ObterRelatorios(string contratoId)
+        {
+            var contrato = DominioContrato.ObterPorId(new Guid(contratoId), atributosContrato);
+            var oportunidade = DominioOportunidade.ObterPorId(new Guid(contrato.new_opportunityid), atributosOportunidade);
+            var empreendimento = DominioEmpreendimento.ObterPorProduto(oportunidade.new_produtoid.Value, "new_empreendimentoid", "new_cidadeid", "new_apoio_producao_bb", "new_marca", "new_tipo", "new_inicio_comercializacao", "new_tipodeparceria");
+
+            if (empreendimento != null && empreendimento.new_marca != null && empreendimento.new_marca.Value == (int)MarcaEmpreendimento.SENSIA)//Sensia
+                HandleObterRelatoriosSENSIA(contrato, oportunidade, empreendimento);
+            else
+                HandleObterRelatoriosMRV(contrato, oportunidade, empreendimento);
+        }
+        private void HandleObterRelatoriosMRV(contract contrato, opportunity oportunidade, new_empreendimento empreendimento)
+        {
+            var contratoId = contrato.contractid.Value.ToString();
+            var relatorios = new List<RelatorioDeContratoModel>();
+            var relatoriosStaticos = ObterRelatoriosStaticos();
+            var proposta = DominioProposta.ObterPropostaGanha(oportunidade.opportunityid.Value, atributosProposta);
+            var promocoes = DominioPromocao.ObterPromocaoValidaDaOportunidade(oportunidade.opportunityid.Value);
+            var processoCasaIndividual = DominioOportunidade.PertenceProcessoCasaIndividual(oportunidade.opportunityid.Value);
+            bool possuiContratoKitMarketplace = false;
+
+            var DataNovaLeiIncorporacao = Config.AppSettings(DATA_NOVA_LEI_INCORPORACAO);
+
+            var dataConfig = Config.AppSettings(PUBLICACAO_SENSIA);
+
+            DateTime.TryParse(dataConfig, out DateTime dataPublicacaoSensia);
+            var consideraDataSensia = dataPublicacaoSensia
+                != null && dataPublicacaoSensia
+                != DateTime.MinValue
+                && (DateTime.Compare(DateTime.Parse(contrato.createdon.date), dataPublicacaoSensia) > 0);
+
+            var consideraNovaLeiIncorporacao = (contrato.new_num_reg_incorporacao != null &&
+                empreendimento.new_tipo.Value == (int)Entidade.Empreendimento.Tipo.GARDEN) &&
+                !string.IsNullOrEmpty(DataNovaLeiIncorporacao) &&
+                empreendimento.new_inicio_comercializacao != null &&
+                DateTime.Parse(empreendimento.new_inicio_comercializacao.Value) >= 
+                (DateTime.Parse(DataNovaLeiIncorporacao));
+
+            foreach (XmlNode node in relatoriosStaticos.DocumentElement.ChildNodes)
+            {
+
+              
+                var titulo = node.Attributes["Titulo"].InnerText;
+                var url = string.Empty;
+
+
+                if (titulo.Equals(CONTRATO_Nova_Lei_incorporacao) && (consideraNovaLeiIncorporacao))
+                {
+                    url = string.Concat(node.Attributes["Url"].InnerText, contratoId);
+                    relatorios.Add(new RelatorioDeContratoModel() { Nome = titulo, Url = url });
+                    continue;
+                }
+
+                if (titulo == CONTRATO_KIT_Marketplace && (proposta != null && proposta.new_criada_marketplace != null && proposta.new_criada_marketplace.Value))
+                {
+                    var oportunidadeUnidade = DominioOportunidade.ObterOportunidadeVendaUnidadeGanhaPorProduto(oportunidade.new_produtoid.Value);
+                    //Formata url do relatorio do marketplace com parametros datasessao e oportunidade da venda de unidade
+                    url = string.Format(node.Attributes["Url"].InnerText, proposta.description, oportunidadeUnidade.opportunityid.Value.ToString("B"));
+                    possuiContratoKitMarketplace = true;
+                }
+                else
+                {
+                    url = string.Concat(node.Attributes["Url"].InnerText, contratoId);
+                }
+
+                if (titulo.Equals(CONTRATO_TERMO_CIENCIA))
+                {
+                    if (oportunidade.new_empreendimentodaoportunidadeid != null &&
+                     oportunidade.new_tipodeoportunidade.Value != Entidade.Oportunidade.TipoDeOportunidade.VENDA_KIT &&
+                     oportunidade.new_tipodeoportunidade.Value != Entidade.Oportunidade.TipoDeOportunidade.VENDA_SERVICO &&
+                     EmpreendimentoTermoCiencia(oportunidade.new_empreendimentodaoportunidadeid.Value))
+                    {
+                        relatorios.Add(new RelatorioDeContratoModel() { Nome = string.Format(titulo, oportunidade.new_empreendimentodaoportunidadeid.name), Url = url });
+                    }
+                    continue;
+                }
+
+                //Se Empreendimento possuir relacionamento com a entidade Parceria,
+                //onde o tipo de parceria é igual a "Nossa Casa", o CRM deve ser direcionado para uma nova URL para impressão/Envio Docusign.
+                if (titulo.Equals(CONTRATO_PADRAO_NOSSA_CASA))
+                {
+                    RepositorioParceria repositorioParceria = new RepositorioParceria();
+                    var parcerias = repositorioParceria.ObterPorEmpreendimento(empreendimento.new_empreendimentoid.Value);
+                    if (parcerias != null)
+                    {
+                        foreach (new_parceirodocumentcao parceria in parcerias.BusinessEntities)
+                        {
+                            if (parceria.new_tipodeparceiro != null && parceria.new_tipodeparceiro.Value == Entidade.Parceria.TipoParceiro.NOSSACASA)
+                            {
+                                relatorios.Add(new RelatorioDeContratoModel() { Nome = titulo, Url = url });
+                                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO);
+                                relatorios.RemoveAll(relatorio => relatorio.Nome == NOVO_CONTRATO_PADRAO);
+                                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2019);
+                                continue;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                //Se item do xml é termo do boleto digital, verifica condições para adiciona na tela
+                if (titulo.Equals(TERMO_ADESAO_BOLETO_DIGITAL))
+                {
+                    if (oportunidade.new_tipodeoportunidade.Value == Entidade.Oportunidade.TipoDeOportunidade.VENDA_UNIDADE &&
+                     oportunidade.new_adesao_boleto_digital != null &&
+                     oportunidade.new_adesao_boleto_digital.Value == AderiuBoletoDigital)
+                    {
+                        relatorios.Add(new RelatorioDeContratoModel() { Nome = titulo, Url = url });
+                    }
+                }
+                else if (titulo.Equals(CONTRATO_FLEXIBILIZACAO))
+                {
+                    var dataRegistroConfig = Config.AppSettings(PUBLICACAO_CONTRATO_FLEXIBILIZACAO);
+                    DateTime dataPublicacao;
+                    DateTime.TryParse(dataRegistroConfig, out dataPublicacao);
+                    var dataCriacaoProposta = Conversao.ToDateTime(oportunidade.createdon);
+                    var vendaFlexibilizacao = proposta != null && proposta.new_venda_flexibilizacao_parcelas != null ? proposta.new_venda_flexibilizacao_parcelas.Value : false;
+
+                    if (vendaFlexibilizacao && !DominioOportunidade.PertenceProcessoCasaIndividual(oportunidade.opportunityid.Value) && DateTime.Compare(dataPublicacao, dataCriacaoProposta) < 0)
+                    {
+                        relatorios.Add(new RelatorioDeContratoModel() { Nome = titulo, Url = url });
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                    }
+                }
+                else
+                {
+                    relatorios.Add(new RelatorioDeContratoModel() { Nome = titulo, Url = url });
+                }
+            }
+
+            if (consideraDataSensia)
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DE_COMPROMETIMENTO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DE_RECEBIMENTO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DECLARACAO_INCC_SICAQ);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_ADESAO_BOLETO_DIGITAL);
+            }
+
+            if (consideraNovaLeiIncorporacao)
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DE_COMPROMETIMENTO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DE_RECEBIMENTO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DECLARACAO_INCC_SICAQ);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_ADESAO_BOLETO_DIGITAL);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_1);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_2);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_ANUENCIA_PNE);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_PARCELAMENTO_IBTI);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DESCONTO_IBTI);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == NOVO_CONTRATO_PADRAO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CLIENTE_BOM_PAGADOR);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == REGULAMENTO_CLIENTE_BOM_PAGADOR);
+            }
+            else
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_Nova_Lei_incorporacao);
+
+
+            ViewState["contratoId"] = contratoId;
+            ViewState["opportunityId"] = oportunidade.opportunityid.Value;
+            ViewState["numeroContrato"] = contrato.contractnumber;
+            ViewState["tituloPromocao"] = tituloPromocao;
+
+            if (contrato.contracttemplateid.name != Entidade.Contrato.TipoContrato.KIT_ACABAMENTO)
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_KIT_Marketplace);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_KIT);
+            }
+            else
+            {
+                //Exibe contrato do marketplace ou do CRM
+                if (proposta != null && (proposta.new_criada_marketplace == null || !proposta.new_criada_marketplace.Value))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_KIT_Marketplace);
+                }
+                else
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_KIT);
+                }
+            }
+
+            if ((contrato.contracttemplateid.name == Entidade.Contrato.TipoContrato.UNIDADE ||
+                contrato.contracttemplateid.name == Entidade.Contrato.TipoContrato.GARAGEM ||
+                contrato.contracttemplateid.name == Entidade.Contrato.TipoContrato.LOJA) &&
+                Utility.ParseDateTime(contrato.createdon.Value) < new DateTime(2011, 7, 13))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == NOVO_CONTRATO_PADRAO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+            }
+            else if (contrato.contracttemplateid.name == Entidade.Contrato.TipoContrato.UNIDADE ||
+                contrato.contracttemplateid.name == Entidade.Contrato.TipoContrato.GARAGEM)
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO);
+            }
+            else
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == NOVO_CONTRATO_PADRAO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DECLARACAO_INCC_SICAQ);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+            }
+            if (contrato.contracttemplateid.name != Entidade.Contrato.TipoContrato.KIT_ACABAMENTO &&
+                Utility.ParseDateTime(contrato.new_data_base.Value) < new DateTime(2013, 10, 5))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+            }
+            else
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == NOVO_CONTRATO_PADRAO);
+
+                if (contrato.contracttemplateid.name != Entidade.Contrato.TipoContrato.KIT_ACABAMENTO &&
+                    Utility.ParseDateTime(contrato.new_data_base.Value) < Entidade.Contrato.DATA_REFERENCIA_PREVISTA_ENTREGA)
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                }
+                else
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                }
+            }
+
+            // Remover o relatorio de memorial de kit quando a oportunidade estiver cancelada ou em andamento
+            // OU Remover o relatorio de memorial de kit se a unidade nao tem kit
+            // A unidade pode ter kit quando foi distratada e voltou para venda 
+            if (oportunidade.statuscode != null && (oportunidade.statuscode.Value == Entidade.Oportunidade.StatusCode.CANCELADA))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == KEY_RELAT_MEMORIA_KIT);
+            }
+            else
+            {
+                if (!DominioKit.ProdutoPossuiKitAtivo(oportunidade.new_produtoid.Value) || !DominioOportunidade.PossuiDistratoTipoKit(oportunidade.new_produtoid.Value))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == KEY_RELAT_MEMORIA_KIT);
+                }
+            }
+
+            // Alteração solicitada através da demanda 699584 - Tipificação dos apartamentos tipo PNE
+            var produto = DominioProduto.ObterPorId(oportunidade.new_produtoid.Value, "new_tipologiaid");
+
+            if (produto.new_tipologiaid != null && produto.new_tipologiaid.name == QR2 && oportunidade.new_tipo_pne != null && oportunidade.new_tipo_pne.Value == Entidade.Oportunidade.TipoDePNE.COM_ADAPTACAO)
+            {
+                //Remove os 2 termos por se tratar de um oportunidade comum.
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_1);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_2);
+            }
+            else
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_ANUENCIA_PNE);
+            }
+
+            //Validação de relatórios de PNE.
+            if (oportunidade.new_tipo_pne == null)
+            {
+                //Remove os 2 termos por se tratar de um oportunidade comum.
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_1);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_2);
+            }
+            else if (oportunidade.new_tipo_pne.Value == Entidade.Oportunidade.TipoDePNE.COM_ADAPTACAO || oportunidade.new_tipo_pne.Value == Entidade.Oportunidade.TipoDePNE.DEFINITIVA)
+            {
+                //Remove relatório de PNE sem adaptação.
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_1);
+            }
+            else
+            {
+                //Remove relatório de PNE com adaptação.
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_2);
+            }
+
+            // Alterado para atender a demanda 288731 Parcela de Desconto, onde oportunidades que forem criadas depois de abril de 2015 irão utilizar o novo
+            // link da capa de contrato
+            if (Utility.ParseDateTime(contrato.createdon.Value) > new DateTime(2015, 5, 8) &&
+                contrato.contracttemplateid.name != Entidade.Contrato.TipoContrato.KIT_ACABAMENTO &&
+                Utility.ParseDateTime(contrato.new_data_base.Value) < Entidade.Contrato.DATA_REFERENCIA_PREVISTA_ENTREGA)
+            {
+                if (relatorios.Any(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013))
+                {
+                    var relatorio072013 = relatorios.FirstOrDefault(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                    var relatorio042015 = relatorios.FirstOrDefault(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_4_2015);
+
+                    relatorio072013.Tipo = relatorio042015.Tipo;
+                    relatorio072013.Url = relatorio042015.Url;
+                }
+            }
+
+            relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_4_2015);
+
+            // Alterado para atender a demanda 403596 - Venda Garantida, onde oportunidades que são de Venda Garantida, irá ter uma capa de contrato especialmente para ela.
+            if (DominioVendaGarantida.ValidarOportunidadeVendaGarantida(new Guid(contrato.new_opportunityid)))
+            {
+                if (relatorios.Any(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016))
+                {
+                    var relatorio012016 = relatorios.FirstOrDefault(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                    var relatorioVG = relatorios.FirstOrDefault(relatorio => relatorio.Nome == CONTRATO_PADRAO_VENDA_GARANTIDA);
+
+                    relatorio012016.Tipo = relatorioVG.Tipo;
+                    relatorio012016.Url = relatorioVG.Url;
+                }
+            }
+
+            relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VENDA_GARANTIDA);
+
+            if (contrato.new_unidade_pronta != null && contrato.new_unidade_pronta.Value)
+            {
+                if (relatorios.Any(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016))
+                {
+                    var relatorio012016 = relatorios.FirstOrDefault(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                    relatorios.Add(new RelatorioDeContratoModel() { Nome = CONTRATO_PADRAO_VERSAO_5_2017, Url = relatorio012016.Url });
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                }
+            }
+
+            if (proposta != null)
+            {
+                DateTime dataCriacaoProposta = new DateTime();
+                DateTime dataPublicacaoNovaPremiacao = new DateTime();
+
+                DateTime.TryParse(proposta.createdon.Value, out dataCriacaoProposta);
+                DateTime.TryParse(Config.AppSettings(DATA_PUBLICACAO_NOVA_PREMIACAO), out dataPublicacaoNovaPremiacao);
+
+                if ((proposta.new_desconto_quantidade_1 == null || proposta.new_desconto_quantidade_1.IsNull ||
+                     proposta.new_desconto_quantidade_2 == null || proposta.new_desconto_quantidade_2.IsNull ||
+                     proposta.new_desconto_valor_1 == null || proposta.new_desconto_valor_1.IsNull ||
+                     proposta.new_desconto_valor_2 == null || proposta.new_desconto_valor_2.IsNull ||
+                     proposta.new_desconto_vencimento_1 == null || proposta.new_desconto_vencimento_1.IsNull ||
+                     proposta.new_desconto_vencimento_2 == null || proposta.new_desconto_vencimento_2.IsNull) ||
+                     (dataPublicacaoNovaPremiacao != DateTime.MinValue && dataCriacaoProposta < dataPublicacaoNovaPremiacao) ||
+                     oportunidade.new_adesao_opcao_seguro.Value)
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CLIENTE_BOM_PAGADOR);
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == REGULAMENTO_CLIENTE_BOM_PAGADOR);
+                }
+
+                if (oportunidade.new_adesao_opcao_seguro == null || !oportunidade.new_adesao_opcao_seguro.Value)
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_ADESAO_SEGURO);
+                }
+            }
+
+            if (empreendimento == null || empreendimento.new_apoio_producao_bb == null || !empreendimento.new_apoio_producao_bb.Value)
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == DECLARACAO_APOIO_PRODUCAO_BB);
+            }
+
+            //Exibe termo desconto itbi somente se possui promoção
+            if (!PossuiPromocaoIsencao(oportunidade))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DESCONTO_IBTI);
+            }
+
+            //Exibe termo desconto itbi somente se possui promoção
+            if (!PossuiPromocaoParcelamento(oportunidade))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_PARCELAMENTO_IBTI);
+            }
+
+            var planoFinanciamento = DominioPlanoFinanciamento.ObterPorOportunidade(oportunidade.opportunityid.Value, "new_classificacao");
+
+            if (planoFinanciamento != null && planoFinanciamento.new_classificacao != null && !processoCasaIndividual)
+            {
+                switch (planoFinanciamento.new_classificacao.Value)
+                {
+                    case Entidade.PlanoDeFinanciamento.Classificacao.ASSOCIATIVO:
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_BANCARIO);
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_FLEX);
+                        break;
+                    case Entidade.PlanoDeFinanciamento.Classificacao.FLEX:
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_ASSOCIATIVO);
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_BANCARIO);
+                        break;
+                    case Entidade.PlanoDeFinanciamento.Classificacao.BANCARIO:
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_ASSOCIATIVO);
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_FLEX);
+                        break;
+                    default:
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_ASSOCIATIVO);
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_BANCARIO);
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_FLEX);
+                        break;
+                }
+            }
+            else
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_ASSOCIATIVO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_BANCARIO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_FLEX);
+            }
+
+            //Exibe relatório da Procuração Serra Bonita somente para empreendimentos Parque Serra Bonita
+            //e para oportunidades do tipo Venda de Unidade  
+            if (oportunidade.new_tipodeoportunidade.Value != Entidade.Oportunidade.TipoDeOportunidade.VENDA_UNIDADE || !DominioConfiguracoesCrm.PossuiValorNosParametrosCrm(CHAVE_PROCURACAO_SERRA_BONITA, oportunidade.new_empreendimentodaoportunidadeid.Value.ToString()))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == PROCURACAO_SERRA_BONITA);
+            }
+
+            if (oportunidade.new_valortotalcnd == null || oportunidade.new_valortotalcnd.Value <= 0)
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_INDICACAO_PREMIADA);
+            }
+
+            if (processoCasaIndividual && relatorios.Any(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+            }
+            else
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_CASA_INDIVIDUAL);
+            }
+
+            //835858 - contratos anteriores e vendas em andamento com Proposta Ganha - Requisito 3
+            var registroConfig = Config.AppSettings(PUBLICACAO_CONTRATO_VENDA_FACIL);
+            DateTime dataPublicacao_835858;
+            DateTime.TryParse(registroConfig, out dataPublicacao_835858);
+            if (Utility.ParseDateTime(contrato.createdon.Value) >= dataPublicacao_835858)
+            {
+                if (relatorios.Any(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_ASSOCIATIVO))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_ASSOCIATIVO);
+                }
+
+                if (relatorios.Any(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_BANCARIO))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_BANCARIO);
+                }
+
+                if (relatorios.Any(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_FLEX))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_FLEX);
+                }
+
+                if (relatorios.Any(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                }
+
+                if (relatorios.Any(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_5_2017))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == (CONTRATO_PADRAO_VERSAO_5_2017));
+                }
+
+                if (relatorios.Any(relatorio => relatorio.Nome == CONTRATO_FLEXIBILIZACAO))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_FLEXIBILIZACAO);
+                }
+
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_5_2017);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == NOVO_CONTRATO_PADRAO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_FLEXIBILIZACAO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_4_2015);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VENDA_GARANTIDA);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_FLEXIBILIZACAO);
+
+                if (processoCasaIndividual)
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_12_2018);
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == FICHA_DE_TRANSPARENCIA);
+                }
+                else
+                {
+                    //Retirar a regra que exibe os Termos de Isenção de ITBI e Registro e Termo de Parcelamento de ITBI / Registro, 
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DESCONTO_IBTI);
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_CASA_INDIVIDUAL);
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_1);
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_2);
+                    // CONTRATO CHECK LIST BANCO
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_CHECKLIST_BANCO);
+                    // ADITIVO OPÇÃO DE REGISTRO DO CONTRATO
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == ADITIVO_OPCAO_REGISTRO);
+                    //Retirar a regra que exibe na tela de relatórios o Termo de Cliente Bom pagador.
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CLIENTE_BOM_PAGADOR);
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_PARCELAMENTO_IBTI);
+                    //Retirar a regra dos Termos de Indicação Premiada 1.0 e 2.0, 
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_INDICACAO_PREMIADA);
+                    //Termo de Anuência - PCD(Atualmente PNE).
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_ANUENCIA_PNE);
+                }
+            }
+            else
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_12_2018);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == FICHA_DE_TRANSPARENCIA);
+            }
+
+            relatorios = ConfigurarRelatorioCapaContratoLeiDistrato(relatorios, contrato, possuiContratoKitMarketplace, processoCasaIndividual);
+
+            if (consideraNovaLeiIncorporacao)
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2019);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_SENSIA);
+            }
+
+            foreach (new_promocao promocao in promocoes.BusinessEntities)
+            {
+                if (promocao != null)
+                {
+                    //Promoção
+                    var promocaoRequest = new PromocaoTermoRequest();
+                    //IdCampnha
+                    promocaoRequest.IdCampanha = promocao.new_promocaoid.Value;
+                    //IdCliente
+                    promocaoRequest.IdCliente = oportunidade.customerid.Value;
+                    //IdUnidade
+                    promocaoRequest.IdUnidade = oportunidade.new_produtoid.Value;
+                    //NomeCliente
+                    promocaoRequest.NomeCliente = oportunidade.customerid.name;
+                    var cliente = DominioCliente.ObterCpfCnpjCliente(oportunidade.customerid.Value);
+                    //cpfCnpjCliente
+                    promocaoRequest.CpfCnpjCliente = cliente.new_tipodecliente.name == "P. Física" ? cliente.new_cpf : cliente.new_cnpj;
+
+                    //Se tiver CPF ou CNPJ válido entra
+                    if (!string.IsNullOrEmpty(promocaoRequest.CpfCnpjCliente))
+                    {
+                        if (promocao.new_ms_campanha != null && promocao.new_ms_campanha.Value == true)
+                        {
+                            if (ValidaPromocaoApta(promocao, oportunidade.opportunityid.Value))
+                            {
+                                var promocaoRespose = DominioPromocao.GerarPDFPromocao(promocaoRequest);
+
+                                //Promoção vai ir com o nome
+                                tituloPromocao = "Ms Campanha - " + promocao.new_name;
+
+                                if (!string.IsNullOrEmpty(promocaoRespose.Url))
+                                {
+                                    ViewState["tituloPromocao"] = tituloPromocao;
+
+                                    relatorios.Add(new RelatorioDeContratoModel() { Nome = tituloPromocao, Url = promocaoRespose.Url });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_SENSIA);
+
+            var IdJardinsRegataRelatorioBomPagador = Config.AppSettings(ID_JARDINS_REGATA_REL_BOM_PAGADOR);
+
+            if (empreendimento == null || string.IsNullOrEmpty(IdJardinsRegataRelatorioBomPagador) || empreendimento.new_empreendimentoid.Value != Guid.Parse(IdJardinsRegataRelatorioBomPagador))
+                relatorios.RemoveAll(relatorio => relatorio.Nome == REGULAMENTO_CLIENTE_BOM_PAGADOR);
+
+            if (oportunidade != null && oportunidade.new_tipodeoportunidade != null && oportunidade.new_tipodeoportunidade.Value != Entidade.Oportunidade.TipoDeOportunidade.VENDA_KIT)
+            {
+                //Obter o corpo do contrato
+                var corposDoContrato = DominioCorpoContrato.ObterCorpoDoContrato(null, contratoId, true);
+                if (corposDoContrato != null)
+                {
+                    foreach (var corpoDoContrao in corposDoContrato)
+                    {
+                        if (!string.IsNullOrEmpty(corpoDoContrao.Url))
+                        {
+                            if (!string.IsNullOrEmpty(corpoDoContrao.UrlAssinatura))
+                                relatorios.Add(new RelatorioDeContratoModel() { Nome = corpoDoContrao.NomeExibicao ?? "Corpo do Contrato", Url = $"{corpoDoContrao.Url}{contratoId}|{corpoDoContrao.UrlAssinatura}{contratoId}", Tipo = corpoDoContrao.Tipo });
+                            else
+                                relatorios.Add(new RelatorioDeContratoModel() { Nome = corpoDoContrao.NomeExibicao ?? "Corpo do Contrato", Url = $"{corpoDoContrao.Url}{contratoId}", Tipo = corpoDoContrao.Tipo });
+                        }
+                        else
+                        {
+                            string urlBase = "http://" + Config.AppSettings("servidorcrm") + "/" + Config.AppSettings("organization");
+
+                            if (!string.IsNullOrEmpty(corpoDoContrao.UrlAssinatura))
+                                relatorios.Add(new RelatorioDeContratoModel() { Nome = corpoDoContrao.NomeExibicao ?? "Corpo do Contrato", Url = $"{corpoDoContrao.Annotationid}|{corpoDoContrao.UrlAssinatura}{contratoId}", Tipo = corpoDoContrao.Tipo });
+                            else if (corpoDoContrao.Annotationid != Guid.Empty)
+                                relatorios.Add(new RelatorioDeContratoModel() { Nome = corpoDoContrao.NomeExibicao ?? "Corpo do Contrato", Url = corpoDoContrao.Annotationid.ToString(), Tipo = corpoDoContrao.Tipo });
+                        }
+                    }
+                }
+                //Obter o termos do contrato
+                foreach (var termoDoContrao in DominioCorpoContrato.ObterTermoDoContrato(null, contratoId, true))
+                {
+
+                    if (!termoDoContrao.Continue)
+                    {
+                        throw new InvalidOperationException(termoDoContrao.Mensagem);
+                    }
+
+                    if (!string.IsNullOrEmpty(termoDoContrao.Url))
+                    {
+                        if (!string.IsNullOrEmpty(termoDoContrao.UrlAssinatura))
+                        {
+                            relatorios.Add(new RelatorioDeContratoModel()
+                            {
+                                Nome = termoDoContrao.NomeExibicao ?? "Corpo do Contrato",
+                                Url = $"{termoDoContrao.Url}{contratoId}|{termoDoContrao.UrlAssinatura}{contratoId}",
+                                Tipo = termoDoContrao.Tipo
+                            });
+                        }
+                        else
+                        {
+                            relatorios.Add(new RelatorioDeContratoModel()
+                            {
+                                Nome = termoDoContrao.NomeExibicao ?? "Corpo do Contrato",
+                                Url = $"{(!termoDoContrao.Url.EndsWith("=") ? termoDoContrao.Url : termoDoContrao.Url + contratoId)}",
+                                Tipo = termoDoContrao.Tipo
+                            });
+                        }
+                    }
+                    else if (!string.IsNullOrEmpty(termoDoContrao.Mensagem))
+                    {
+                        string urlBase = "http://" + Config.AppSettings("servidorcrm") + "/" + Config.AppSettings("organization");
+                        if (!string.IsNullOrEmpty(termoDoContrao.UrlAssinatura))
+                            relatorios.Add(new RelatorioDeContratoModel() { Nome = termoDoContrao.NomeExibicao ?? "Corpo do Contrato", Url = $"{termoDoContrao.Annotationid}|{termoDoContrao.UrlAssinatura}{contratoId}", Tipo = termoDoContrao.Tipo });
+                        else
+                            relatorios.Add(new RelatorioDeContratoModel() { Nome = termoDoContrao.NomeExibicao ?? "Corpo do Contrato", Url = termoDoContrao.Annotationid.ToString(), Tipo = termoDoContrao.Tipo });
+                    }
+                }
+            }
+
+            //1102926 - Ordenação dos relatórios por ordem específica definida em tabela que consta na tarefa 183154 - Warlem L Lima
+            var relatorioOrdenado = OrdenarRelatorios(relatorios);
+
+            chkListContratos.DataTextField = "Nome";
+            chkListContratos.DataValueField = "Url";
+            chkListContratos.DataSource = relatorioOrdenado;
+            chkListContratos.DataBind();
+
+            relatorios = new List<RelatorioDeContratoModel>();
+
+            //Obtem os relatorios do sharepoint
+            ObterRelatoriosSharePoint(relatorios, oportunidade, empreendimento);
+
+            if (relatorios.Count > 0)
+            {
+                chkListContratos2.DataTextField = "Nome";
+                chkListContratos2.DataValueField = "Url";
+                chkListContratos2.DataSource = relatorios;
+                chkListContratos2.DataBind();
+            }
+        }
+
+        private void HandleObterRelatoriosSENSIA(contract contrato, opportunity oportunidade, new_empreendimento empreendimento)
+        {
+            var contratoId = contrato.contractid.Value.ToString();
+            var relatorios = new List<RelatorioDeContratoModel>();
+            var relatoriosStaticos = ObterRelatoriosStaticos();
+            var proposta = DominioProposta.ObterPropostaGanha(oportunidade.opportunityid.Value, atributosProposta);
+            var promocoes = DominioPromocao.ObterPromocaoValidaDaOportunidade(oportunidade.opportunityid.Value);
+            var processoCasaIndividual = DominioOportunidade.PertenceProcessoCasaIndividual(oportunidade.opportunityid.Value);
+            bool possuiContratoKitMarketplace = false;
+
+            var DataNovaLeiIncorporacao = Config.AppSettings(DATA_NOVA_LEI_INCORPORACAO);
+
+            var dataConfig = Config.AppSettings(PUBLICACAO_SENSIA);
+
+            DateTime.TryParse(dataConfig, out DateTime dataPublicacaoSensia);
+            var consideraDataSensia = dataPublicacaoSensia
+                != null && dataPublicacaoSensia
+                != DateTime.MinValue
+                && (DateTime.Compare(DateTime.Parse(contrato.createdon.date), dataPublicacaoSensia) > 0);
+
+            var consideraNovaLeiIncorporacao = (contrato.new_num_reg_incorporacao != null &&
+                empreendimento.new_tipo.Value == (int)Entidade.Empreendimento.Tipo.GARDEN) &&
+                !string.IsNullOrEmpty(DataNovaLeiIncorporacao) &&
+                empreendimento.new_inicio_comercializacao != null &&
+                DateTime.Parse(empreendimento.new_inicio_comercializacao.Value) >=
+                (DateTime.Parse(DataNovaLeiIncorporacao));
+
+            foreach (XmlNode node in relatoriosStaticos.DocumentElement.ChildNodes)
+            {
+
+
+                var titulo = node.Attributes["Titulo"].InnerText;
+                var url = string.Empty;
+
+
+                if (titulo.Equals(CONTRATO_Nova_Lei_incorporacao) && (consideraNovaLeiIncorporacao))
+                {
+                    url = string.Concat(node.Attributes["Url"].InnerText, contratoId);
+                    relatorios.Add(new RelatorioDeContratoModel() { Nome = titulo, Url = url });
+                    continue;
+                }
+
+                if (titulo == CONTRATO_KIT_Marketplace && (proposta != null && proposta.new_criada_marketplace != null && proposta.new_criada_marketplace.Value))
+                {
+                    var oportunidadeUnidade = DominioOportunidade.ObterOportunidadeVendaUnidadeGanhaPorProduto(oportunidade.new_produtoid.Value);
+                    //Formata url do relatorio do marketplace com parametros datasessao e oportunidade da venda de unidade
+                    url = string.Format(node.Attributes["Url"].InnerText, proposta.description, oportunidadeUnidade.opportunityid.Value.ToString("B"));
+                    possuiContratoKitMarketplace = true;
+                }
+                else
+                {
+                    url = string.Concat(node.Attributes["Url"].InnerText, contratoId);
+                }
+
+                if (titulo.Equals(CONTRATO_TERMO_CIENCIA))
+                {
+                    if (oportunidade.new_empreendimentodaoportunidadeid != null &&
+                     oportunidade.new_tipodeoportunidade.Value != Entidade.Oportunidade.TipoDeOportunidade.VENDA_KIT &&
+                     oportunidade.new_tipodeoportunidade.Value != Entidade.Oportunidade.TipoDeOportunidade.VENDA_SERVICO &&
+                     EmpreendimentoTermoCiencia(oportunidade.new_empreendimentodaoportunidadeid.Value))
+                    {
+                        relatorios.Add(new RelatorioDeContratoModel() { Nome = string.Format(titulo, oportunidade.new_empreendimentodaoportunidadeid.name), Url = url });
+                    }
+                    continue;
+                }
+
+                if (titulo.Equals(FICHA_DE_TRANSPARENCIA))//Sensia
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == FICHA_DE_TRANSPARENCIA);
+                    continue;
+                }
+         
+
+                //Se item do xml é termo do boleto digital, verifica condições para adiciona na tela
+                if (titulo.Equals(TERMO_ADESAO_BOLETO_DIGITAL))
+                {
+                    if (oportunidade.new_tipodeoportunidade.Value == Entidade.Oportunidade.TipoDeOportunidade.VENDA_UNIDADE &&
+                     oportunidade.new_adesao_boleto_digital != null &&
+                     oportunidade.new_adesao_boleto_digital.Value == AderiuBoletoDigital)
+                    {
+                        relatorios.Add(new RelatorioDeContratoModel() { Nome = titulo, Url = url });
+                    }
+                }
+                else if (titulo.Equals(CONTRATO_FLEXIBILIZACAO))
+                {
+                    var dataRegistroConfig = Config.AppSettings(PUBLICACAO_CONTRATO_FLEXIBILIZACAO);
+                    DateTime dataPublicacao;
+                    DateTime.TryParse(dataRegistroConfig, out dataPublicacao);
+                    var dataCriacaoProposta = Conversao.ToDateTime(oportunidade.createdon);
+                    var vendaFlexibilizacao = proposta != null && proposta.new_venda_flexibilizacao_parcelas != null ? proposta.new_venda_flexibilizacao_parcelas.Value : false;
+
+                    if (vendaFlexibilizacao && !DominioOportunidade.PertenceProcessoCasaIndividual(oportunidade.opportunityid.Value) && DateTime.Compare(dataPublicacao, dataCriacaoProposta) < 0)
+                    {
+                        relatorios.Add(new RelatorioDeContratoModel() { Nome = titulo, Url = url });
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                    }
+                }
+                else
+                {
+                    relatorios.Add(new RelatorioDeContratoModel() { Nome = titulo, Url = url });
+                }
+            }
+
+            if (consideraDataSensia)
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DE_COMPROMETIMENTO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DE_RECEBIMENTO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DECLARACAO_INCC_SICAQ);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_ADESAO_BOLETO_DIGITAL);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_NOSSA_CASA);
+            }
+
+            if (consideraNovaLeiIncorporacao)
+            {
+               relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DE_COMPROMETIMENTO);
+               relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DE_RECEBIMENTO);
+               relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DECLARACAO_INCC_SICAQ);
+               relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_ADESAO_BOLETO_DIGITAL);
+               relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_1);
+               relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_2);
+               relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_ANUENCIA_PNE);
+               relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_PARCELAMENTO_IBTI);
+               relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DESCONTO_IBTI);
+               relatorios.RemoveAll(relatorio => relatorio.Nome == NOVO_CONTRATO_PADRAO);
+               relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+               relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+               relatorios.RemoveAll(relatorio => relatorio.Nome == CLIENTE_BOM_PAGADOR);
+               relatorios.RemoveAll(relatorio => relatorio.Nome == REGULAMENTO_CLIENTE_BOM_PAGADOR);
+            }
+            else
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_Nova_Lei_incorporacao);
+
+
+            ViewState["contratoId"] = contratoId;
+            ViewState["opportunityId"] = oportunidade.opportunityid.Value;
+            ViewState["numeroContrato"] = contrato.contractnumber;
+            ViewState["tituloPromocao"] = tituloPromocao;
+
+            if (contrato.contracttemplateid.name != Entidade.Contrato.TipoContrato.KIT_ACABAMENTO)
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_KIT_Marketplace);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_KIT);
+            }
+            else
+            {
+                //Exibe contrato do marketplace ou do CRM
+                if (proposta != null && (proposta.new_criada_marketplace == null || !proposta.new_criada_marketplace.Value))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_KIT_Marketplace);
+                }
+                else
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_KIT);
+                }
+            }
+
+            if ((contrato.contracttemplateid.name == Entidade.Contrato.TipoContrato.UNIDADE ||
+                contrato.contracttemplateid.name == Entidade.Contrato.TipoContrato.GARAGEM ||
+                contrato.contracttemplateid.name == Entidade.Contrato.TipoContrato.LOJA) &&
+                Utility.ParseDateTime(contrato.createdon.Value) < new DateTime(2011, 7, 13))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == NOVO_CONTRATO_PADRAO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+            }
+            else if (contrato.contracttemplateid.name == Entidade.Contrato.TipoContrato.UNIDADE ||
+                contrato.contracttemplateid.name == Entidade.Contrato.TipoContrato.GARAGEM)
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO);
+            }
+            else
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == NOVO_CONTRATO_PADRAO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DECLARACAO_INCC_SICAQ);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+            }
+            if (contrato.contracttemplateid.name != Entidade.Contrato.TipoContrato.KIT_ACABAMENTO &&
+                Utility.ParseDateTime(contrato.new_data_base.Value) < new DateTime(2013, 10, 5))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+            }
+            else
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == NOVO_CONTRATO_PADRAO);
+
+                if (contrato.contracttemplateid.name != Entidade.Contrato.TipoContrato.KIT_ACABAMENTO &&
+                    Utility.ParseDateTime(contrato.new_data_base.Value) < Entidade.Contrato.DATA_REFERENCIA_PREVISTA_ENTREGA)
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                }
+                else
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                }
+            }
+
+            // Remover o relatorio de memorial de kit quando a oportunidade estiver cancelada ou em andamento
+            // OU Remover o relatorio de memorial de kit se a unidade nao tem kit
+            // A unidade pode ter kit quando foi distratada e voltou para venda 
+            if (oportunidade.statuscode != null && (oportunidade.statuscode.Value == Entidade.Oportunidade.StatusCode.CANCELADA))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == KEY_RELAT_MEMORIA_KIT);
+            }
+            else
+            {
+                if (!DominioKit.ProdutoPossuiKitAtivo(oportunidade.new_produtoid.Value) || !DominioOportunidade.PossuiDistratoTipoKit(oportunidade.new_produtoid.Value))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == KEY_RELAT_MEMORIA_KIT);
+                }
+            }
+
+            // Alteração solicitada através da demanda 699584 - Tipificação dos apartamentos tipo PNE
+            var produto = DominioProduto.ObterPorId(oportunidade.new_produtoid.Value, "new_tipologiaid");
+
+            if (produto.new_tipologiaid != null && produto.new_tipologiaid.name == QR2 && oportunidade.new_tipo_pne != null && oportunidade.new_tipo_pne.Value == Entidade.Oportunidade.TipoDePNE.COM_ADAPTACAO)
+            {
+                //Remove os 2 termos por se tratar de um oportunidade comum.
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_1);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_2);
+            }
+            else
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_ANUENCIA_PNE);
+            }
+
+            //Validação de relatórios de PNE.
+            if (oportunidade.new_tipo_pne == null)
+            {
+                //Remove os 2 termos por se tratar de um oportunidade comum.
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_1);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_2);
+            }
+            else if (oportunidade.new_tipo_pne.Value == Entidade.Oportunidade.TipoDePNE.COM_ADAPTACAO || oportunidade.new_tipo_pne.Value == Entidade.Oportunidade.TipoDePNE.DEFINITIVA)
+            {
+                //Remove relatório de PNE sem adaptação.
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_1);
+            }
+            else
+            {
+                //Remove relatório de PNE com adaptação.
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_2);
+            }
+
+            // Alterado para atender a demanda 288731 Parcela de Desconto, onde oportunidades que forem criadas depois de abril de 2015 irão utilizar o novo
+            // link da capa de contrato
+            if (Utility.ParseDateTime(contrato.createdon.Value) > new DateTime(2015, 5, 8) &&
+                contrato.contracttemplateid.name != Entidade.Contrato.TipoContrato.KIT_ACABAMENTO &&
+                Utility.ParseDateTime(contrato.new_data_base.Value) < Entidade.Contrato.DATA_REFERENCIA_PREVISTA_ENTREGA)
+            {
+                if (relatorios.Any(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013))
+                {
+                    var relatorio072013 = relatorios.FirstOrDefault(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                    var relatorio042015 = relatorios.FirstOrDefault(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_4_2015);
+                    
+                    relatorio072013.Tipo = relatorio042015.Tipo;
+                    relatorio072013.Url = relatorio042015.Url;
+                }
+            }
+
+            relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_4_2015);
+
+            // Alterado para atender a demanda 403596 - Venda Garantida, onde oportunidades que são de Venda Garantida, irá ter uma capa de contrato especialmente para ela.
+            if (DominioVendaGarantida.ValidarOportunidadeVendaGarantida(new Guid(contrato.new_opportunityid)))
+            {
+                if (relatorios.Any(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016))
+                {
+                    var relatorio012016 = relatorios.FirstOrDefault(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                    var relatorioVG = relatorios.FirstOrDefault(relatorio => relatorio.Nome == CONTRATO_PADRAO_VENDA_GARANTIDA);
+
+                    relatorio012016.Tipo = relatorioVG.Tipo;
+                    relatorio012016.Url = relatorioVG.Url;
+                }
+            }
+
+            relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VENDA_GARANTIDA);
+
+            if (contrato.new_unidade_pronta != null && contrato.new_unidade_pronta.Value)
+            {
+                if (relatorios.Any(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016))
+                {
+                    var relatorio012016 = relatorios.FirstOrDefault(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+
+                    relatorios.Add(new RelatorioDeContratoModel() { Nome = CONTRATO_PADRAO_VERSAO_5_2017, Url = relatorio012016.Url });
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                }
+            }
+
+            if (proposta != null)
+            {
+                DateTime dataCriacaoProposta = new DateTime();
+                DateTime dataPublicacaoNovaPremiacao = new DateTime();
+
+                DateTime.TryParse(proposta.createdon.Value, out dataCriacaoProposta);
+                DateTime.TryParse(Config.AppSettings(DATA_PUBLICACAO_NOVA_PREMIACAO), out dataPublicacaoNovaPremiacao);
+
+                if ((proposta.new_desconto_quantidade_1 == null || proposta.new_desconto_quantidade_1.IsNull ||
+                     proposta.new_desconto_quantidade_2 == null || proposta.new_desconto_quantidade_2.IsNull ||
+                     proposta.new_desconto_valor_1 == null || proposta.new_desconto_valor_1.IsNull ||
+                     proposta.new_desconto_valor_2 == null || proposta.new_desconto_valor_2.IsNull ||
+                     proposta.new_desconto_vencimento_1 == null || proposta.new_desconto_vencimento_1.IsNull ||
+                     proposta.new_desconto_vencimento_2 == null || proposta.new_desconto_vencimento_2.IsNull) ||
+                     (dataPublicacaoNovaPremiacao != DateTime.MinValue && dataCriacaoProposta < dataPublicacaoNovaPremiacao) ||
+                     oportunidade.new_adesao_opcao_seguro.Value)
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CLIENTE_BOM_PAGADOR);
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == REGULAMENTO_CLIENTE_BOM_PAGADOR);
+                }
+
+                if (oportunidade.new_adesao_opcao_seguro == null || !oportunidade.new_adesao_opcao_seguro.Value)
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_ADESAO_SEGURO);
+                }
+            }
+
+            if (empreendimento == null || empreendimento.new_apoio_producao_bb == null || !empreendimento.new_apoio_producao_bb.Value)
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == DECLARACAO_APOIO_PRODUCAO_BB);
+            }
+
+            //Exibe termo desconto itbi somente se possui promoção
+            if (!PossuiPromocaoIsencao(oportunidade))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DESCONTO_IBTI);
+            }
+
+            //Exibe termo desconto itbi somente se possui promoção
+            if (!PossuiPromocaoParcelamento(oportunidade))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_PARCELAMENTO_IBTI);
+            }
+
+            var planoFinanciamento = DominioPlanoFinanciamento.ObterPorOportunidade(oportunidade.opportunityid.Value, "new_classificacao");
+
+            if (planoFinanciamento != null && planoFinanciamento.new_classificacao != null && !processoCasaIndividual)
+            {
+                switch (planoFinanciamento.new_classificacao.Value)
+                {
+                    case Entidade.PlanoDeFinanciamento.Classificacao.ASSOCIATIVO:
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_BANCARIO);
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_FLEX);
+                        break;
+                    case Entidade.PlanoDeFinanciamento.Classificacao.FLEX:
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_ASSOCIATIVO);
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_BANCARIO);
+                        break;
+                    case Entidade.PlanoDeFinanciamento.Classificacao.BANCARIO:
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_ASSOCIATIVO);
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_FLEX);
+                        break;
+                    default:
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_ASSOCIATIVO);
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_BANCARIO);
+                        relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_FLEX);
+                        break;
+                }
+            }
+            else
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_ASSOCIATIVO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_BANCARIO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_FLEX);
+            }
+
+            //Exibe relatório da Procuração Serra Bonita somente para empreendimentos Parque Serra Bonita
+            //e para oportunidades do tipo Venda de Unidade  
+            if (oportunidade.new_tipodeoportunidade.Value != Entidade.Oportunidade.TipoDeOportunidade.VENDA_UNIDADE || !DominioConfiguracoesCrm.PossuiValorNosParametrosCrm(CHAVE_PROCURACAO_SERRA_BONITA, oportunidade.new_empreendimentodaoportunidadeid.Value.ToString()))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == PROCURACAO_SERRA_BONITA);
+            }
+
+            if (oportunidade.new_valortotalcnd == null || oportunidade.new_valortotalcnd.Value <= 0)
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_INDICACAO_PREMIADA);
+            }
+
+            if (processoCasaIndividual && relatorios.Any(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016))
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+            }
+            else
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_CASA_INDIVIDUAL);
+            }
+
+            //835858 - contratos anteriores e vendas em andamento com Proposta Ganha - Requisito 3
+            var registroConfig = Config.AppSettings(PUBLICACAO_CONTRATO_VENDA_FACIL);
+            DateTime dataPublicacao_835858;
+            DateTime.TryParse(registroConfig, out dataPublicacao_835858);
+            if (Utility.ParseDateTime(contrato.createdon.Value) >= dataPublicacao_835858)
+            {
+                if (relatorios.Any(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_ASSOCIATIVO))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_ASSOCIATIVO);
+                }
+
+                if (relatorios.Any(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_BANCARIO))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_BANCARIO);
+                }
+
+                if (relatorios.Any(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_FLEX))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == ENTREVISTA_DE_FECHAMENTO_FLEX);
+                }
+
+                if (relatorios.Any(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                }
+
+                if (relatorios.Any(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_5_2017))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_5_2017);
+                }
+
+                if (relatorios.Any(relatorio => relatorio.Nome == CONTRATO_FLEXIBILIZACAO))
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_FLEXIBILIZACAO);
+                }
+
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_5_2017);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == NOVO_CONTRATO_PADRAO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2013);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_FLEXIBILIZACAO);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_1_2016);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_4_2015);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VENDA_GARANTIDA);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_FLEXIBILIZACAO);
+
+                if (processoCasaIndividual)
+                {
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_12_2018);
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == FICHA_DE_TRANSPARENCIA);
+                }
+                else
+                {
+                    //Retirar a regra que exibe os Termos de Isenção de ITBI e Registro e Termo de Parcelamento de ITBI / Registro, 
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_DESCONTO_IBTI);
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_CASA_INDIVIDUAL);
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_1);
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_CIENCIA_PNE_2);
+                    // CONTRATO CHECK LIST BANCO
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_CHECKLIST_BANCO);
+                    // ADITIVO OPÇÃO DE REGISTRO DO CONTRATO
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == ADITIVO_OPCAO_REGISTRO);
+                    //Retirar a regra que exibe na tela de relatórios o Termo de Cliente Bom pagador.
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == CLIENTE_BOM_PAGADOR);
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_PARCELAMENTO_IBTI);
+                    //Retirar a regra dos Termos de Indicação Premiada 1.0 e 2.0, 
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_INDICACAO_PREMIADA);
+                    //Termo de Anuência - PCD(Atualmente PNE).
+                    relatorios.RemoveAll(relatorio => relatorio.Nome == TERMO_ANUENCIA_PNE);
+                }
+            }
+            else
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_12_2018);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == FICHA_DE_TRANSPARENCIA);
+            }
+
+            relatorios = ConfigurarRelatorioCapaContratoLeiDistrato(relatorios, contrato, possuiContratoKitMarketplace, processoCasaIndividual);
+
+            if (consideraNovaLeiIncorporacao)
+            {
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2019);
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_SENSIA);
+            }
+
+            foreach (new_promocao promocao in promocoes.BusinessEntities)
+            {
+                if (promocao != null)
+                {
+                    //Promoção
+                    var promocaoRequest = new PromocaoTermoRequest();
+                    //IdCampnha
+                    promocaoRequest.IdCampanha = promocao.new_promocaoid.Value;
+                    //IdCliente
+                    promocaoRequest.IdCliente = oportunidade.customerid.Value;
+                    //IdUnidade
+                    promocaoRequest.IdUnidade = oportunidade.new_produtoid.Value;
+                    //NomeCliente
+                    promocaoRequest.NomeCliente = oportunidade.customerid.name;
+                    var cliente = DominioCliente.ObterCpfCnpjCliente(oportunidade.customerid.Value);
+                    //cpfCnpjCliente
+                    promocaoRequest.CpfCnpjCliente = cliente.new_tipodecliente.name == "P. Física" ? cliente.new_cpf : cliente.new_cnpj;
+
+                    //Se tiver CPF ou CNPJ válido entra
+                    if (!string.IsNullOrEmpty(promocaoRequest.CpfCnpjCliente))
+                    {
+                        if (promocao.new_ms_campanha != null && promocao.new_ms_campanha.Value == true)
+                        {
+                            if (ValidaPromocaoApta(promocao, oportunidade.opportunityid.Value))
+                            {
+                                var promocaoRespose = DominioPromocao.GerarPDFPromocao(promocaoRequest);
+
+                                //Promoção vai ir com o nome
+                                tituloPromocao = "Ms Campanha - " + promocao.new_name;
+
+                                if (!string.IsNullOrEmpty(promocaoRespose.Url))
+                                {
+                                    ViewState["tituloPromocao"] = tituloPromocao;
+
+                                    relatorios.Add(new RelatorioDeContratoModel() { Nome = tituloPromocao, Url = promocaoRespose.Url });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            var dataBaseRelatorio = Config.AppSettings(DATA_NOVA_RELATORIO_CONTRATO_SENSIA);
+
+            if (DateTime.Parse(contrato.createdon.date) >= DateTime.Parse(dataBaseRelatorio))
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_VERSAO_7_2019);
+            else
+                relatorios.RemoveAll(relatorio => relatorio.Nome == CONTRATO_PADRAO_SENSIA);
+
+
+            var IdJardinsRegataRelatorioBomPagador = Config.AppSettings(ID_JARDINS_REGATA_REL_BOM_PAGADOR);
+
+            if (empreendimento == null || string.IsNullOrEmpty(IdJardinsRegataRelatorioBomPagador) || empreendimento.new_empreendimentoid.Value != Guid.Parse(IdJardinsRegataRelatorioBomPagador))
+                relatorios.RemoveAll(relatorio => relatorio.Nome == REGULAMENTO_CLIENTE_BOM_PAGADOR);
+
+            if (oportunidade != null && oportunidade.new_tipodeoportunidade != null && oportunidade.new_tipodeoportunidade.Value != Entidade.Oportunidade.TipoDeOportunidade.VENDA_KIT)
+            {
+                var corposDoContrato = DominioCorpoContrato.ObterCorpoDoContrato(null, contratoId, true);
+                if (corposDoContrato != null)
+                {
+                    foreach (var corpoDoContrao in corposDoContrato)
+                    {
+                        if (!string.IsNullOrEmpty(corpoDoContrao.Url))
+                        {
+                            if (!string.IsNullOrEmpty(corpoDoContrao.UrlAssinatura))
+                                relatorios.Add(new RelatorioDeContratoModel() { Nome = corpoDoContrao.NomeExibicao ?? "Corpo do Contrato", Url = $"{corpoDoContrao.Url}{contratoId}|{corpoDoContrao.UrlAssinatura}{contratoId}", Tipo = corpoDoContrao.Tipo });
+                            else
+                                relatorios.Add(new RelatorioDeContratoModel() { Nome = corpoDoContrao.NomeExibicao ?? "Corpo do Contrato", Url = $"{corpoDoContrao.Url}{contratoId}", Tipo = corpoDoContrao.Tipo });
+                        }
+                        else
+                        {
+                            string urlBase = "http://" + Config.AppSettings("servidorcrm") + "/" + Config.AppSettings("organization");
+
+                            if (!string.IsNullOrEmpty(corpoDoContrao.UrlAssinatura))
+                                relatorios.Add(new RelatorioDeContratoModel() { Nome = corpoDoContrao.NomeExibicao ?? "Corpo do Contrato", Url = $"{corpoDoContrao.Annotationid}|{corpoDoContrao.UrlAssinatura}{contratoId}", Tipo = corpoDoContrao.Tipo });
+                            else if (corpoDoContrao.Annotationid != Guid.Empty)
+                                relatorios.Add(new RelatorioDeContratoModel() { Nome = corpoDoContrao.NomeExibicao ?? "Corpo do Contrato", Url = corpoDoContrao.Annotationid.ToString(), Tipo = corpoDoContrao.Tipo });
+                        }
+                    }
+                }
+                foreach (var termoDoContrao in DominioCorpoContrato.ObterTermoDoContrato(null, contratoId, true))
+                {
+                    if (!termoDoContrao.Continue)
+                        throw new InvalidOperationException(termoDoContrao.Mensagem);
+
+                    if (!string.IsNullOrEmpty(termoDoContrao.Url))
+                    {
+                        if (!string.IsNullOrEmpty(termoDoContrao.UrlAssinatura))
+                        {
+                            relatorios.Add(new RelatorioDeContratoModel()
+                            {
+                                Nome = termoDoContrao.NomeExibicao ?? "Corpo do Contrato",
+                                Url = $"{termoDoContrao.Url}{contratoId}|{termoDoContrao.UrlAssinatura}{contratoId}",
+                                Tipo = termoDoContrao.Tipo
+                            });
+                        }
+                        else
+                        {
+                            relatorios.Add(new RelatorioDeContratoModel()
+                            {
+                                Nome = termoDoContrao.NomeExibicao ?? "Corpo do Contrato",
+                                Url = $"{(!termoDoContrao.Url.EndsWith("=") ? termoDoContrao.Url : termoDoContrao.Url + contratoId)}",
+                                Tipo = termoDoContrao.Tipo
+                            });
+                        }
+                    }
+                    else if (!string.IsNullOrEmpty(termoDoContrao.Mensagem))
+                    {
+                        string urlBase = "http://" + Config.AppSettings("servidorcrm") + "/" + Config.AppSettings("organization");
+                        if (!string.IsNullOrEmpty(termoDoContrao.UrlAssinatura))
+                            relatorios.Add(new RelatorioDeContratoModel() { Nome = termoDoContrao.NomeExibicao ?? "Corpo do Contrato", Url = $"{termoDoContrao.Annotationid}|{termoDoContrao.UrlAssinatura}{contratoId}", Tipo = termoDoContrao.Tipo });
+                        else
+                            relatorios.Add(new RelatorioDeContratoModel() { Nome = termoDoContrao.NomeExibicao ?? "Corpo do Contrato", Url = termoDoContrao.Annotationid.ToString(), Tipo = termoDoContrao.Tipo });
+                    }
+                }
+            }
+
+            var relatorioOrdenado = OrdenarRelatorios(relatorios);
+
+            chkListContratos.DataTextField = "Nome";
+            chkListContratos.DataValueField = "Url";
+            chkListContratos.DataSource = relatorioOrdenado;
+            chkListContratos.DataBind();
+
+            relatorios = new List<RelatorioDeContratoModel>();
+
+            //Obtem os relatorios do sharepoint
+            ObterRelatoriosSharePoint(relatorios, oportunidade, empreendimento);
+
+            if (relatorios.Count > 0)
+            {
+                chkListContratos2.DataTextField = "Nome";
+                chkListContratos2.DataValueField = "Url";
+                chkListContratos2.DataSource = relatorios;
+                chkListContratos2.DataBind();
+            }
+        }
+
+ 
